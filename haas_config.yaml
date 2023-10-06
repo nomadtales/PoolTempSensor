@@ -1,0 +1,15 @@
+rest:
+  - resource: http://xx.xx.xx.xx/
+    scan_interval: 3000
+    sensor:
+      - name: Pico - Pico Temp
+        value_template: "{{ value_json.picotemp }}"
+        unit_of_measurement: C
+
+      - name: Pico - Pool Temp
+        value_template: "{{ value_json.pooltemp }}"
+        unit_of_measurement: C
+
+      - name: Pico - Air Temp
+        value_template: "{{ value_json.airtemp }}"
+        unit_of_measurement: C
