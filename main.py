@@ -35,14 +35,19 @@ def ReadPicoTemp():
 
 # function for ds18b20 sensor(s) temps
 def ReadDS18b20Temp(ds_sensor):
-    # convert temp
-    sensor.convert_temp()
-    # pause
-    time.sleep_ms(750)
-    # get temp
-    temp = sensor.read_temp(ds_sensor)
-    # pause
-    time.sleep_ms(750)
+    err = None
+    temp = None
+    try:
+        # convert temp
+        sensor.convert_temp()
+        # pause
+        time.sleep_ms(750)
+        # get temp
+        temp = sensor.read_temp(ds_sensor)
+        # pause
+        time.sleep_ms(750)
+    except Exception as err:
+        print('Error: ', err)
     return temp
 
 # Indicate that the app started
