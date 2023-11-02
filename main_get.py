@@ -5,13 +5,14 @@ import time
 from time import sleep
 import onewire
 import ds18x20
+import dht
 import machine
 import json
 import variables # custom variables file
 
-# sensors
+# DS sensors bytearrays
 poolsensor = variables.poolsensor
-airsensor = variables.airsensor
+pondsensor = variables.pondsensor
 
 # setup internal temp and LED
 adcpin = 4
@@ -20,11 +21,18 @@ intled = machine.Pin("LED", machine.Pin.OUT)
 
 # setup ds18b20 sensor(s)
 ds_pin = machine.Pin(22)
-sensor = ds18x20.DS18X20(onewire.OneWire(ds_pin))
-roms = sensor.scan()
+ds_sensor = ds18x20.DS18X20(onewire.OneWire(ds_pin))
 
-# check sensor exists
-print('Found DS devices: ', roms)
+# setup DHT11 sensor
+dht_pin = machine.Pin(21)
+dht_sensor = dht.DHT11(dht_pin)
+
+# check ds sensor exists
+roms = ds_sensor.scan()
+print('Found DS sensors: ', roms)
+
+# check dht sensor exists
+print('Found DHT sensors: ', dht_sensor)
 
 # function for internal temp
 def ReadPicoTemp():
@@ -34,21 +42,52 @@ def ReadPicoTemp():
     return round(temperature, 1)
 
 # function for ds18b20 sensor(s) temps
-def ReadDS18b20Temp(ds_sensor):
+def ReadDS18b20Temp(sensor):
     err = None
     temp = None
     try:
         # convert temp
-        sensor.convert_temp()
+        ds_sensor.convert_temp()
         # pause
         time.sleep_ms(750)
         # get temp
-        temp = sensor.read_temp(ds_sensor)
+        temp = ds_sensor.read_temp(sensor)
         # pause
         time.sleep_ms(750)
     except Exception as err:
-        print('Error: ', err)
+        print('Failed reading DS sensor: ', sensor)
+        temp = None
     return temp
+
+def ReadDHTSensor():
+    try:
+        # get sensor reading
+        dht_sensor.measure()
+        #create dictionary
+        dht_read = {
+            "temp": dht_sensor.temperature(),
+            "humidity": dht_sensor.humidity()
+        }
+        # pause
+        time.sleep_ms(750)
+    except Exception as err:
+        print('Failed reading DHT sensor')
+        dht_read = {
+            "temp": None,
+            "humidity": None
+        }
+    return dht_read
+
+def GetWLANStr(SSID):
+    try:
+        accessPoints = wlan.scan() 
+        for ap in accessPoints:
+            if ap[0] == bytes(SSID, 'utf-8'):
+                strength = int((f'{ap[3]}'))
+    except Exception as err:
+        print('Error: ', err)
+        strength = None
+    return strength
 
 # Indicate that the app started
 intled.value(1)
@@ -58,12 +97,13 @@ intled.value(0)
 # setup WLAN
 wlan = network.WLAN(network.STA_IF)
 wlan.active(True)
+
 # prevent the wireless chip from activating power-saving mode when it is idle
 wlan.config(pm = 0xa11140) 
 
 # Connect to your AP using your login details
 wlan.connect(variables.SSID, variables.SSID_PW) 
- 
+
 # Search for up to 10 seconds for network connection
 max_wait = 10
 while max_wait > 0:
@@ -73,7 +113,7 @@ while max_wait > 0:
     intled.value(1)
     print('waiting for connection...')
     sleep(1)
- 
+
 # Raise an error if Pico is unable to connect
 if wlan.status() != 3:
     intled.value(0)
@@ -82,25 +122,21 @@ else:
     print('WLAN connected')
     status = wlan.ifconfig()
     print( 'ip = ' + status[0] )
- 
+
 # Open a socket
 addr = socket.getaddrinfo('0.0.0.0', 80)[0][-1]
- 
+
 s = socket.socket()
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(addr)
 s.listen(1)
- 
+
 # Display your IP address
 print('listening on', addr)
 
+# Main loop
 while True:
-    # If pico is connected to wifi put the onboard LED on else off
-    if wlan.status() == 3: 
-        intled.value(1)
-    else:
-        intled.value(0)
-         
+
     try:
         # client connects
         cl, addr = s.accept()
@@ -111,23 +147,32 @@ while True:
         
         # blink the LED
         intled.value(0)
-         
+        
         # Read temp from onboard sensor
         picotemp = ReadPicoTemp()
         
         # get pool temp
         pooltemp = ReadDS18b20Temp(poolsensor)
-        
-        # get air temp
-        airtemp = ReadDS18b20Temp(airsensor)
+       
+        # get pond temp
+        pondtemp = ReadDS18b20Temp(pondsensor)
+
+        # get DHT reading
+        DHTread = ReadDHTSensor()
+
+        # get WLAN Signal Strength
+        wlanrssi = GetWLANStr(variables.SSID)
 
         # print temp details
         print(f"Pico Temperature: {picotemp}°C")
         print(f"Pool Temperature: {pooltemp}°C")
-        print(f"Air Temperature: {airtemp}°C")
+        print(f"Pond Temperature: {pondtemp}°C")
+        print(f"Air Temperature: {DHTread["temp"]}°C")
+        print(f"Air Humidity: {DHTread["humidity"]}%")
+        print(f"WLAN RSSI: {wlanrssi}db")
 
         # prep the data to send to Home Assistant as type Json
-        data = { "picotemp": picotemp, "pooltemp": pooltemp, "airtemp": airtemp }
+        data = { "picotemp": picotemp, "pooltemp": pooltemp, "pondtemp": pondtemp, "airtemp": DHTread["temp"], "humidity": DHTread["humidity"], "wlanRSSI": wlanrssi}
         JsonData = json.dumps(data)
         
         # Send headers notifying the receiver that the data is of type Json for application consumption 
@@ -142,6 +187,21 @@ while True:
         # blink the LED
         intled.value(1)
         
-    except OSError as e:
-        cl.close()
-        print('connection closed')
+    except:
+        print("code fail (wlan status = " + str(wlan.status()) + ")")
+        if wlan.status() <= 0:
+            print("trying to reconnect...")
+            wlan.disconnect()
+            wlan.connect(variables.SSID, variables.SSID_PW)
+            if wlan.status() == 3:
+                print('connected')
+
+                # Open a socket
+                addr = socket.getaddrinfo('0.0.0.0', 80)[0][-1]
+
+                s = socket.socket()
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(addr)
+                s.listen(1)
+            else:
+                print('connection failed')
